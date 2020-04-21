@@ -5,15 +5,51 @@ import logging
 import argparse
 import subprocess
 import re
+import smtplib
+import email.utils
+import requests
 from github import Github
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 logger = None
 
 github_repo = None
 github_pr = None
 github_commits = None
+patchwork_sid = None
 repo_base = None
 checkpatch_pl = None
+
+PATCHWORK_BASE_URL = "https://patchwork.kernel.org/api/1.1"
+
+FAIL_MSG = '''
+This is automated email and please do not replay to this email!
+
+Dear submitter,
+
+Thank you for submitting the patches to the linux bluetooth mailing list.
+While we are preparing for reviewing the patches, we found the following
+issue/warning.
+
+
+Test Result:
+Checkpatch Failed
+
+Patch Title:
+{}
+
+Output:
+{}
+
+
+For more details about BlueZ coding style guide, please find it
+in doc/coding-style.txt
+
+---
+Regards,
+Linux Bluetooth
+'''
 
 def err_exit(msg):
     sys.exit("ERROR: " + msg)
@@ -42,10 +78,35 @@ def init_github(args):
     global github_repo
     global github_pr
     global github_commits
+    global patchwork_sid
 
     github_repo = Github(os.environ['GITHUB_TOKEN']).get_repo(args.repo)
     github_pr = github_repo.get_pull(args.pull_request)
     github_commits = github_pr.get_commits()
+    patchwork_sid = get_pw_sid(github_pr.title)
+
+def get_pw_sid(pr_title):
+    """
+    Parse PR title prefix and get PatchWork Series ID
+    PR Title Prefix = "[PW_S_ID:<series_id>] XXXXX"
+    """
+
+    try:
+        sid = re.search(r'^\[PW_SID:([0-9]+)\]', pr_title).group(1)
+    except AttributeError:
+        logging.error("Unable to find the series_id from title %s" % pr_title)
+        sid = None
+
+    return sid
+
+def requests_url(url):
+    """ Helper function to requests WEB API GET with URL """
+
+    resp = requests.get(url)
+    if resp.status_code != 200:
+        raise requests.HTTPError("GET {}".format(resp.status_code))
+
+    return resp
 
 def post_github_comment(msg):
     """ Post message to PR comment """
@@ -96,6 +157,96 @@ def check_patch(sha):
 
     return output
 
+def send_email(sender, receiver, msg):
+    """ Send email """
+
+    if 'EMAIL_TOKEN' not in os.environ:
+        logging.warning("missing EMAIL_TOKEN. Skip sending email")
+        return
+
+    try:
+        session = smtplib.SMTP('smtp.gmail.com', 587)
+        session.ehlo()
+        session.starttls()
+        session.ehlo()
+        session.login(sender, os.environ['EMAIL_TOKEN'])
+        session.sendmail(sender, receiver, msg.as_string())
+        logging.info("Successfully sent email")
+    except Exception as e:
+        logging.error("Exception: {}".format(e))
+    finally:
+        session.quit()
+
+    logging.info("Sending email done")
+
+def patchwork_get_series(sid):
+    """ Get series detail from patchwork """
+
+    url = PATCHWORK_BASE_URL + "/series/" + sid
+    req = requests_url(url)
+
+    return req.json()
+
+def get_patch_details(commit):
+    """
+    Use the patch title from github commit to get the patch details from
+    the PatchWork
+    """
+
+    # Patch title from github commit
+    title = commit.commit.message.splitlines()[0]
+    logging.debug("Commit Title: {}".format(title))
+
+    # Get Patchwork series
+    series = patchwork_get_series(patchwork_sid)
+    logging.debug("Got Patchwork Series: {}".format(series))
+
+    # Go throuhg each patch in the series to find the patch contains title
+    for patch in series["patches"]:
+        # Need to add a space in the front for some corner case.
+        if (patch['name'].find(title) != -1):
+            logging.debug("Found matching patch title")
+            req = requests_url(patch['url'])
+            return req.json()
+        else:
+            logging.debug("Title not match.")
+
+    logging.error("Cannot find matching patch from Patchwork")
+
+    return None
+
+def notify_failure(commit, output):
+    """ Send checkpatch failure to mailing list """
+
+    sender = 'bluez.test.bot@gmail.com'
+
+    receivers = []
+
+    receivers.append('Tedd An <tedd.an@linux.intel.com>')
+    receivers.append('Tedd Ho-Jeong An <tedd.an@intel.com>')
+
+    # Get patch details from Patchwork with github commit
+    patch = get_patch_details(commit)
+
+    # Create message
+    msg = MIMEMultipart()
+    msg['From'] = sender
+    msg['To'] = ", ".join(receivers)
+    msg['Subject'] = "RE: " + patch['name']
+
+    # Message Header
+    msg.add_header('In-Reply-To', patch['msgid'])
+    msg.add_header('References', patch['msgid'])
+
+    body = FAIL_MSG.format(patch['name'], output)
+    logging.debug("Message Body: {}".format(body))
+    msg.attach(MIMEText(body, 'plain'))
+
+    logging.debug("Mail Message: {}".format(msg))
+
+    # Send email
+    send_email(sender, receivers, msg)
+
 def check_args(args):
     """ Check input arguments and environment variables """
 
@@ -145,6 +296,8 @@ def main():
         output = check_patch(commit.sha)
         if output != None:
             outputs.append(output)
+            # Send email to mailing list for failure
+            notify_failure(commit, output)
 
     logging.debug("outputs length = %d" % len(outputs))
 

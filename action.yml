@@ -7,9 +7,13 @@ inputs:
   github_token:
     description: Secret github github_token
     required: true
+  email_token:
+    description: Email github_token
+    required: true
 
 runs:
   using: 'docker'
   image: 'Dockerfile'
   env:
     GITHUB_TOKEN: ${{ inputs.github_token }}
+    EMAIL_TOKEN: ${{ inputs.email_token }}
