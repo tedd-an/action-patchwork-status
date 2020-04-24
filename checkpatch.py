@@ -136,7 +136,7 @@ def checkpatch_fail_msg(outputs):
 
     return msg
 
-def check_patch(sha):
+def run_checkpatch(sha):
     """ Run checkpatch script with commit """
 
     output = None
@@ -247,6 +247,31 @@ def notify_failure(commit, output):
     # Send email
     send_email(sender, receivers, msg)
 
+def check_patch(args):
+    """ Check patch """
+
+    outputs = []
+
+    for commit in github_commits:
+        output = run_checkpatch(commit.sha)
+        if output != None:
+            outputs.append(output)
+            # Send email to mailing list for failure
+            notify_failure(commit, output)
+
+    logging.debug("outputs length = %d" % len(outputs))
+
+    if len(outputs) != 0:
+        logging.debug("Post fail message to PR")
+        post_github_comment(checkpatch_fail_msg(outputs))
+        logging.info("Script terminate with non-zero(1)")
+        sys.exit(1)
+
+    logging.debug("Post success message to PR")
+    post_github_comment(checkpatch_success_msg())
+    logging.info("Script terminate with zero(0)")
+    sys.exit(0)
+
 def check_args(args):
     """ Check input arguments and environment variables """
 
@@ -284,34 +309,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+
     check_args(args)
 
     init_logging(args.verbose)
 
     init_github(args)
 
-    outputs = []
-
-    for commit in github_commits:
-        output = check_patch(commit.sha)
-        if output != None:
-            outputs.append(output)
-            # Send email to mailing list for failure
-            notify_failure(commit, output)
-
-    logging.debug("outputs length = %d" % len(outputs))
-
-    if len(outputs) != 0:
-        logging.debug("Post fail message to PR")
-        post_github_comment(checkpatch_fail_msg(outputs))
-        logging.info("Script terminate with non-zero(1)")
-        sys.exit(1)
-
-    logging.debug("Post success message to PR")
-    post_github_comment(checkpatch_success_msg())
-    logging.info("Script terminate with zero(0)")
-    sys.exit(0)
-
+    check_patch(args)
 
 if __name__ == "__main__":
     main()
