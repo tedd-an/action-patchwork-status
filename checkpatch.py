@@ -8,6 +8,7 @@ import re
 import smtplib
 import email.utils
 import requests
+import configparser
 from github import Github
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,6 +21,8 @@ github_commits = None
 patchwork_sid = None
 repo_base = None
 checkpatch_pl = None
+
+config = None
 
 PATCHWORK_BASE_URL = "https://patchwork.kernel.org/api/1.1"
 
@@ -71,6 +74,14 @@ def init_logging(verbose):
 
     logging.info("Initialized the logger: level=%s",
                  logging.getLevelName(logger.getEffectiveLevel()))
+
+def init_config():
+    """ Read config.ini """
+
+    global config
+
+    config = configparser.ConfigParser()
+    config.read("/config.ini")
 
 def init_github(args):
     """ Initialize github object """
@@ -160,14 +171,17 @@ def run_checkpatch(sha):
 def send_email(sender, receiver, msg):
     """ Send email """
 
+    email_cfg = config['email']
+
     if 'EMAIL_TOKEN' not in os.environ:
         logging.warning("missing EMAIL_TOKEN. Skip sending email")
         return
 
     try:
-        session = smtplib.SMTP('smtp.gmail.com', 587)
+        session = smtplib.SMTP(email_cfg['server'], int(email_cfg['port']))
         session.ehlo()
-        session.starttls()
+        if 'starttls' not in email_cfg or email_cfg['starttls'] == 'yes':
+            session.starttls()
         session.ehlo()
         session.login(sender, os.environ['EMAIL_TOKEN'])
         session.sendmail(sender, receiver, msg.as_string())
@@ -218,15 +232,23 @@ def get_patch_details(commit):
 def notify_failure(commit, output):
     """ Send checkpatch failure to mailing list """
 
-    sender = 'bluez.test.bot@gmail.com'
+    email_cfg = config['email']
 
-    receivers = []
-
-    receivers.append('Tedd An <tedd.an@linux.intel.com>')
-    receivers.append('Tedd Ho-Jeong An <tedd.an@intel.com>')
+    # sender = 'bluez.test.bot@gmail.com'
+    sender = email_cfg['user']
 
     # Get patch details from Patchwork with github commit
     patch = get_patch_details(commit)
+
+    receivers = []
+    if 'only-maintainers' in email_cfg and email_cfg['only-maintainers'] == 'yes':
+        # Send only to the addresses in the 'maintainers'
+        maintainers = "".join(email_cfg['maintainers'].splitlines()).split(",")
+        receivers.extend(maintainers)
+    else:
+        # Send to default-to address and submitter
+        receivers.append(email_cfg['default-to'])
+        receivers.append(patch['submitter']['email'])
 
     # Create message
     msg = MIMEMultipart()
@@ -257,7 +279,8 @@ def check_patch(args):
         if output != None:
             outputs.append(output)
             # Send email to mailing list for failure
-            notify_failure(commit, output)
+            if 'enable' not in config['email'] or config['email']['enable'] == 'yes':
+                notify_failure(commit, output)
 
     logging.debug("outputs length = %d" % len(outputs))
 
@@ -313,6 +336,8 @@ def main():
     check_args(args)
 
     init_logging(args.verbose)
+
+    init_config()
 
     init_github(args)
 
