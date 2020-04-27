@@ -27,7 +27,7 @@ config = None
 PATCHWORK_BASE_URL = "https://patchwork.kernel.org/api/1.1"
 
 FAIL_MSG = '''
-This is automated email and please do not replay to this email!
+This is automated email and please do not reply to this email!
 
 Dear submitter,
 
