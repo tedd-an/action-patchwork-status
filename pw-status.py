@@ -202,7 +202,7 @@ def init_config():
     global config
 
     config = configparser.ConfigParser()
-    config.read("./config.ini")
+    config.read("/config.ini")
 
 def init_logging(verbose):
     """ Initialize logger. Default to INFO """
