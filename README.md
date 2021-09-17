@@ -1,2 +1,2 @@
-# action-check-patch
-Check Patch
+# action-patchwork-status
+Send Patchwork Status

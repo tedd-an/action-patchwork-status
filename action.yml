@@ -1,7 +1,7 @@
 #action.yml
-name: Checkpatch
+name: patchwork-status
 
-description: 'Run checkpatch with patches'
+description: 'Report the Patchwork Bluetooth status'
 
 inputs:
   github_token:
