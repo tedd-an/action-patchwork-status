@@ -254,7 +254,7 @@ def main():
     # Get the list of series from the patch list
     series_list = get_series_from_patches(patches)
 
-    title = "[BlueZ Internal] Patchwork Bluetooth in Open State - Weekly Report"
+    title = "[BlueZ Internal] List of Patchwork patches in open state - Weekly Report"
     body = body_header
 
     for series in series_list:
