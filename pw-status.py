@@ -9,6 +9,7 @@ import smtplib
 import email.utils
 import requests
 import configparser
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -18,13 +19,20 @@ config = None
 PW_BASE_URL = "https://patchwork.kernel.org/api/1.2"
 PW_BT_PROJECT_ID= "395"
 
+BODY_FOOTER = '''
+
+------------
+Best Regards
+BlueZ Team
+'''
+
 def send_email(sender, receiver, msg):
     """ Send email """
 
     email_cfg = config['email']
 
     if 'EMAIL_TOKEN' not in os.environ:
-        logging.warning("missing EMAIL_TOKEN. Skip sending email")
+        logger.warning("missing EMAIL_TOKEN. Skip sending email")
         return
 
     try:
@@ -35,13 +43,13 @@ def send_email(sender, receiver, msg):
         session.ehlo()
         session.login(sender, os.environ['EMAIL_TOKEN'])
         session.sendmail(sender, receiver, msg.as_string())
-        logging.info("Successfully sent email")
+        logger.info("Successfully sent email")
     except Exception as e:
-        logging.error("Exception: {}".format(e))
+        logger.error("Exception: {}".format(e))
     finally:
         session.quit()
 
-    logging.info("Sending email done")
+    logger.info("Sending email done")
 
 def get_receivers():
     """
@@ -87,6 +95,19 @@ def is_maintainer_only():
 
     return False
 
+def datetime_to_str(date):
+    """
+    Convert datetime to ISO 8601 format
+    """
+    return datetime(date.year, date.month, date.day,
+                    date.hour, date.minute, date.second).isoformat()
+
+def get_n_days(days):
+    """
+    Get the datetime object of n days ago
+    """
+    return datetime.today() - timedelta(days=days)
+
 def compose_email(title, body):
     """
     Compose and send email
@@ -122,6 +143,15 @@ def requests_url(url):
 
     return resp
 
+def requests_patch(url, headers, content):
+    """ Helper function to post data to URL """
+
+    resp = requests.patch(url, content, headers=headers)
+    if resp.status_code != 200:
+        raise requests.HTTPError("POST {}".format(resp.status_code))
+
+    return resp
+
 def pw_get_series(sid):
     """ Get series detail from patchwork """
 
@@ -130,7 +160,7 @@ def pw_get_series(sid):
 
     return req.json()
 
-def pw_get_patches_by_state(state):
+def pw_get_patches_by_state(state, before=0, since=0):
     """
     Get the array of patches with given state
     """
@@ -140,6 +170,17 @@ def pw_get_patches_by_state(state):
     url = '{}/patches/?project={}&state={}&archived=0'.format(PW_BASE_URL,
                                                               PW_BT_PROJECT_ID,
                                                               state)
+
+    if before != 0:
+        # Get the list of patches with "New" and older than 3 days
+        before_str = datetime_to_str(get_n_days(before))
+        url = url + '&before={}'.format(before_str)
+
+    if since != 0:
+        # Get the list of patches with "New" and older than 3 days
+        since_str = datetime_to_str(get_n_days(since))
+        url = url + '&since={}'.format(since_str)
+
     while True:
         resp = requests_url(url)
         patches = patches + resp.json()
@@ -152,6 +193,30 @@ def pw_get_patches_by_state(state):
         url = resp.links["next"]["url"]
 
     return patches
+
+def pw_set_patch_state(patch, state):
+    """
+    Get Patch State
+    """
+
+    logger.debug("URL: %s" % patch['url'])
+
+    headers = {}
+    if 'PATCHWORK_TOKEN' not in os.environ:
+        logger.error("Patchwork Token doens't exist in the env")
+        return None
+
+    token = os.environ['PATCHWORK_TOKEN']
+    headers['Authorization'] = f'Token {token}'
+    print(headers['Authorization'])
+
+    content = {
+        'state' : "Queued"
+    }
+
+    req = requests_patch(patch['url'], headers, content)
+
+    return req.json()
 
 def id_exist(list, id):
     """
@@ -196,6 +261,78 @@ def parse_series(series):
 
     return output
 
+def task_status():
+
+    body_header = '''
+List of patch series in New state
+=================================
+
+'''
+
+    logger.debug("Start Task: Status")
+
+    # Get the list of patches with "New" state(1)
+    patches = pw_get_patches_by_state(1)
+
+    # Get the list of series from the patch list
+    series_list = get_series_from_patches(patches)
+
+    title = "[BlueZ Internal] List of Patchwork patches in open state - Weekly Report"
+    body = body_header
+
+    for series in series_list:
+        series_full = pw_get_series(str(series['id']))
+        body += parse_series(series_full)
+        body += "\n\n"
+
+    body += BODY_FOOTER
+
+    return (title, body)
+
+def task_triage():
+
+    logger.debug("Start Task: Triage")
+
+    title = "[BlueZ Internal] Patchwork status daily update"
+    body_header = '''
+Dear Maintainers,
+
+The following patch series are in New state in 3 days or more, and it is now
+changed to Queued state.
+
+Once the reivew is done, update the state based on the your action.
+========================================================================
+
+'''
+    body = body_header
+
+    # Get the list of patches with "New" state(1) and 3 days or older
+    patches = pw_get_patches_by_state(1, before=3)
+
+    # No patches are available
+    if not patches:
+        logger.info("No new patches found. Nothing to notify the maintainers")
+        return (None, None)
+        # body += "Great work! No New patches are found!"
+        # body += BODY_FOOTER
+        # return (title, body)
+
+    # Change the state to "Queued(13)"
+    for patch in patches:
+        pw_set_patch_state(patch, 13)
+
+    # Get the list of series from the patch list
+    series_list = get_series_from_patches(patches)
+
+    for series in series_list:
+        series_full = pw_get_series(str(series['id']))
+        body += parse_series(series_full)
+        body += "\n\n"
+
+    body += BODY_FOOTER
+
+    return (title, body)
+
 def init_config():
     """ Read config.ini """
 
@@ -219,28 +356,17 @@ def init_logging(verbose):
     if verbose:
         logger.setLevel(logging.DEBUG)
 
-    logging.info("Initialized the logger: level=%s",
+    logger.info("Initialized the logger: level=%s",
                  logging.getLevelName(logger.getEffectiveLevel()))
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Check patch style in the pull request")
+    parser.add_argument('task', default='status', nargs='?',
+                        help='The name of the task to run. ')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Display debugging info')
     return parser.parse_args()
-
-body_header = '''
-List of patch series in New state
-=================================
-
-'''
-
-body_footer = '''
-
-------------
-Best Regards
-BlueZ Team
-'''
 
 def main():
     args = parse_args()
@@ -248,26 +374,25 @@ def main():
     init_logging(args.verbose)
     init_config()
 
-    # Get the list of patches with "New" state(1)
-    patches = pw_get_patches_by_state(1)
+    title=''
+    body=''
 
-    # Get the list of series from the patch list
-    series_list = get_series_from_patches(patches)
+    if args.task == 'status':
+        (title, body) = task_status()
+    elif args.task == 'triage':
+        (title, body) = task_triage()
+    else:
+        logger.error("Unknown task: %s" % args.task)
+        return
 
-    title = "[BlueZ Internal] List of Patchwork patches in open state - Weekly Report"
-    body = body_header
+    if title == None or body == None:
+        logger.info("Nothing to send. SKip sending email...")
+        return
 
-    for series in series_list:
-        series_full = pw_get_series(str(series['id']))
-        body += parse_series(series_full)
-        body += "\n\n"
-
-    body += body_footer
-
+    logger.debug("TITLE: \n%s" % title)
     logger.debug("BODY: \n%s" % body)
 
     compose_email(title, body)
-
 
 if __name__ == "__main__":
     main()

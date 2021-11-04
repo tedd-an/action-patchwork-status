@@ -12,6 +12,7 @@ echo "REF: $GITHUB_REF"
 echo "HEAD-REF: $GITHUB_HEAD_REF"
 echo "BASE-REF: $GITHUB_BASE_REF"
 echo "PWD: $(pwd)"
+echo "Param #1": $1
 
 if [[ -z $GITHUB_TOKEN ]]
 then
@@ -19,4 +20,4 @@ then
 	exit 1
 fi
 
-/pw-status.py -v
+/pw-status.py -v $1
