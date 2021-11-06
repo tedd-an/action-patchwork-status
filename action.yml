@@ -21,8 +21,8 @@ inputs:
 runs:
   using: 'docker'
   image: 'Dockerfile'
-args:
-  - ${{ inputs.task }}
+  args:
+    - ${{ inputs.task }}
   env:
     GITHUB_TOKEN: ${{ inputs.github_token }}
     EMAIL_TOKEN: ${{ inputs.email_token }}
