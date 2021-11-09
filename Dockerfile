@@ -4,4 +4,4 @@ COPY *.sh /
 COPY *.py /
 COPY *.ini /
 
-CMD [ "/entrypoint.sh" ]
+ENTRYPOINT [ "/entrypoint.sh" ]
