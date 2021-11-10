@@ -453,7 +453,7 @@ def main():
     logger.debug("TITLE: \n%s" % title)
     logger.debug("BODY: \n%s" % body)
 
-    # compose_email(title, body)
+    compose_email(title, body)
 
 if __name__ == "__main__":
     main()
