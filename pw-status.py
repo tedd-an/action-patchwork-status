@@ -218,6 +218,56 @@ def pw_set_patch_state(patch, state):
 
     return req.json()
 
+def pw_set_series_patch_state(series, state):
+    """
+    Set the state of the patches in the series
+    """
+    series_full = pw_get_series(str(series['id']))
+
+    for patch in series_full['patches']:
+        pw_set_patch_state(patch, state)
+
+def pw_get_patch_comments(patch):
+    """
+    Get Patch comments
+    """
+    url = '{}/patches/{}/comments/'.format(PW_BASE_URL, patch['id'])
+
+    resp = requests_url(url)
+
+    return resp.json()
+
+def check_series_reviewed(series, reviewers):
+    """
+    This checks if the patch series are reviewed by the reviewers.
+    It goes through the comments from the patches and find it from the reviewers
+    list.
+    Returns True if the commenter is in the reviewrs list otherwise False
+    """
+
+    series_full = pw_get_series(str(series['id']))
+
+    for patch in series_full['patches']:
+        comments = pw_get_patch_comments(patch)
+
+        # no comments and skip to next
+        if comments == None:
+            continue
+
+        # If the comment was done by the maintainers, the review is done for
+        # this series.
+        for comment in comments:
+            submitter = comment['submitter']['email']
+            if submitter in reviewers:
+                logger.debug("Found (%s) from the reviewer list" % submitter)
+                return True
+
+
+    # If the comment was not done by the reviewers, the reviewers still need to
+    # review it.
+    logger.debug("No review comment found fromm the reviwer list")
+    return False
+
 def id_exist(list, id):
     """
     Check if the id exist in the list. The list item should have "id" field
@@ -291,16 +341,16 @@ List of patch series in New state
 
 def task_triage():
 
+    new_series_list = []
+
     logger.debug("Start Task: Triage")
 
     title = "[BlueZ Internal] Patchwork status daily update"
     body_header = '''
 Dear Maintainers,
 
-The following patch series are in New state in 3 days or more, and it is now
-changed to Queued state.
-
-Once the reivew is done, update the state based on the your action.
+The following patch series are in New state for 3 days or more, but it looks like
+no feedback was provided to the submitter yet.
 ========================================================================
 
 '''
@@ -317,14 +367,24 @@ Once the reivew is done, update the state based on the your action.
         # body += BODY_FOOTER
         # return (title, body)
 
-    # Change the state to "Queued(13)"
-    for patch in patches:
-        pw_set_patch_state(patch, 13)
-
     # Get the list of series from the patch list
     series_list = get_series_from_patches(patches)
 
+    reviewers = "".join(config['triage']['reviewers'].splitlines()).split(',')
+    logger.debug("Reviewers: %s" % reviewers)
+
+    # If the series/patches has comments from the reviewers, then no need to
+    # notify to the maintainers since they already took an action.
     for series in series_list:
+        if not check_series_reviewed(series, reviewers):
+            logger.debug("Add SID(%s) to new_series_list" % series['id'])
+            new_series_list.append(series)
+        else:
+            logger.debug("Update SID(%s) to new state Queued(13)")
+            pw_set_series_patch_state(series, 13)
+
+
+    for series in new_series_list:
         series_full = pw_get_series(str(series['id']))
         body += parse_series(series_full)
         body += "\n\n"
@@ -340,6 +400,7 @@ def init_config():
 
     config = configparser.ConfigParser()
     config.read("/config.ini")
+
 
 def init_logging(verbose):
     """ Initialize logger. Default to INFO """
@@ -392,7 +453,7 @@ def main():
     logger.debug("TITLE: \n%s" % title)
     logger.debug("BODY: \n%s" % body)
 
-    compose_email(title, body)
+    # compose_email(title, body)
 
 if __name__ == "__main__":
     main()
